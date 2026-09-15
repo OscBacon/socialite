@@ -1,8 +1,10 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { fetchLumaEvent } from "@/lib/events/luma";
 
 // Presentation tool: the chat UI renders its output as event cards with a
-// link button each, so the model does not need to write the links itself.
+// cover image and a link button each, so the model does not need to write the
+// links itself.
 const LUMA_EVENT_URL = /^https:\/\/(?:www\.)?(?:luma\.com|lu\.ma)\/[^/?#\s]+$/;
 const REASON_WORD_COUNT = 5;
 
@@ -36,7 +38,29 @@ export default defineTool({
   label: {
     start: ({ events }) => `Showing ${events.length} event${events.length === 1 ? "" : "s"}`,
   },
-  async execute({ events }) {
-    return { events };
+  async execute({ events }, ctx) {
+    // Look up each event page for its cover image, and its canonical URL,
+    // title, and time, rather than trusting the model to copy long URLs.
+    // A failed lookup still shows the card, just without an image.
+    const shown = await Promise.all(
+      events.map(async (event) => {
+        const details = await fetchLumaEvent(event.url, ctx.abortSignal).catch((error: unknown) => {
+          if (ctx.abortSignal?.aborted) {
+            throw error;
+          }
+          return null;
+        });
+
+        return {
+          url: details?.url ?? event.url,
+          title: details?.title ?? event.title,
+          startsAt: details?.startsAt ?? event.startsAt ?? null,
+          reason: event.reason,
+          imageUrl: details?.imageUrl ?? null,
+        };
+      }),
+    );
+
+    return { events: shown };
   },
 });

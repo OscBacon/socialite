@@ -681,6 +681,7 @@ function InputRequestActions({
 }
 
 type ShownEvent = {
+  readonly imageUrl: string | null;
   readonly reason: string;
   readonly startsAt: string | null;
   readonly title: string;
@@ -688,6 +689,7 @@ type ShownEvent = {
 };
 
 const LUMA_EVENT_URL = /^https:\/\/(?:www\.)?(?:luma\.com|lu\.ma)\/[^/?#\s]+$/;
+const LUMA_IMAGE_URL = /^https:\/\/images\.lumacdn\.com\//;
 const eventDateFormatter = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
   hour: "numeric",
@@ -705,12 +707,15 @@ function EventCards({ events }: { readonly events: readonly ShownEvent[] }) {
           className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
           key={event.url}
         >
-          <div className="min-w-0 space-y-1">
-            <p className="font-medium leading-snug text-foreground">{event.title}</p>
-            {event.startsAt ? (
-              <p className="text-xs text-muted-foreground">{formatEventDate(event.startsAt)}</p>
-            ) : null}
-            <p className="text-sm text-muted-foreground">{event.reason}</p>
+          <div className="flex min-w-0 items-start gap-3">
+            <EventThumbnail imageUrl={event.imageUrl} />
+            <div className="min-w-0 space-y-1">
+              <p className="font-medium leading-snug text-foreground">{event.title}</p>
+              {event.startsAt ? (
+                <p className="text-xs text-muted-foreground">{formatEventDate(event.startsAt)}</p>
+              ) : null}
+              <p className="text-sm text-muted-foreground">{event.reason}</p>
+            </div>
           </div>
           <Button asChild className="self-start sm:self-center" size="sm" variant="outline">
             <a href={event.url} rel="noopener noreferrer" target="_blank">
@@ -721,6 +726,28 @@ function EventCards({ events }: { readonly events: readonly ShownEvent[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+function EventThumbnail({ imageUrl }: { readonly imageUrl: string | null }) {
+  const [failed, setFailed] = useState(false);
+
+  if (!imageUrl || failed) {
+    return null;
+  }
+
+  // Luma's image CDN already serves a 320px square, so next/image is not needed.
+  return (
+    <img
+      alt=""
+      className="size-20 shrink-0 rounded-md bg-muted object-cover"
+      decoding="async"
+      height={320}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      src={imageUrl}
+      width={320}
+    />
   );
 }
 
@@ -737,7 +764,7 @@ function readShownEvents(part: EveDynamicToolPart): ShownEvent[] | null {
 
   const shown = events.flatMap((value): ShownEvent[] => {
     const event = asRecord(value);
-    const { reason, startsAt, title, url } = event ?? {};
+    const { imageUrl, reason, startsAt, title, url } = event ?? {};
 
     if (
       typeof url !== "string" ||
@@ -748,7 +775,15 @@ function readShownEvents(part: EveDynamicToolPart): ShownEvent[] | null {
       return [];
     }
 
-    return [{ reason, startsAt: typeof startsAt === "string" ? startsAt : null, title, url }];
+    return [
+      {
+        imageUrl: typeof imageUrl === "string" && LUMA_IMAGE_URL.test(imageUrl) ? imageUrl : null,
+        reason,
+        startsAt: typeof startsAt === "string" ? startsAt : null,
+        title,
+        url,
+      },
+    ];
   });
 
   return shown.length > 0 ? shown : null;

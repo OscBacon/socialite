@@ -11,6 +11,9 @@ export default defineTool({
     start: () => `Finding events in ${LUMA_CITY.name}`,
   },
   async execute(_input, ctx) {
-    return findLumaEvents(ctx.abortSignal);
+    const search = await findLumaEvents(ctx.abortSignal);
+    // Cover images are only for display (show_events looks them up), so keep
+    // the long image URLs out of the model's context.
+    return { ...search, events: search.events.map(({ imageUrl: _imageUrl, ...event }) => event) };
   },
 });

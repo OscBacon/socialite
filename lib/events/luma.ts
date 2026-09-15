@@ -9,6 +9,8 @@ const USER_AGENT = "Mozilla/5.0 (compatible; Socialite/0.1)";
 const FETCH_TIMEOUT_MS = 15_000;
 const DETAIL_CONCURRENCY = 5;
 const DESCRIPTION_MAX_CHARS = 500;
+const LUMA_IMAGE_HOST = "images.lumacdn.com";
+const THUMBNAIL_SIZE_PX = 320;
 
 export const LUMA_CITY = {
   name: "London",
@@ -43,6 +45,7 @@ export type LumaEvent = {
   readonly availability: string;
   readonly guestCount: number | null;
   readonly description: string;
+  readonly imageUrl: string | null;
 };
 
 export type LumaEventSearch = {
@@ -60,8 +63,7 @@ export async function findLumaEvents(signal?: AbortSignal): Promise<LumaEventSea
 
   const results = await mapWithConcurrency(links, DETAIL_CONCURRENCY, async (url) => {
     try {
-      const eventPage = await fetchHtml(url, signal);
-      return { event: parseLumaEventPage(eventPage.html, eventPage.finalUrl), url };
+      return { event: await fetchLumaEvent(url, signal), url };
     } catch (error) {
       if (signal?.aborted) {
         throw error;
@@ -159,7 +161,45 @@ export function parseLumaEventPage(html: string, pageUrl: string): LumaEvent | n
       (readString(jsonLd, "description") ?? "").replace(/\s+/g, " ").trim(),
       DESCRIPTION_MAX_CHARS,
     ),
+    imageUrl: readCoverImageUrl(jsonLd, pageData),
   };
+}
+
+export async function fetchLumaEvent(url: string, signal?: AbortSignal): Promise<LumaEvent | null> {
+  const page = await fetchHtml(url, signal);
+  return parseLumaEventPage(page.html, page.finalUrl);
+}
+
+// Rewrites a Luma-hosted image to a 320px square served by Luma's image CDN.
+// Returns null for anything that is not a Luma image.
+export function lumaThumbnailUrl(imageUrl: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(imageUrl);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "https:" || url.hostname !== LUMA_IMAGE_HOST) {
+    return null;
+  }
+
+  // Drop any existing transform, e.g. `/cdn-cgi/image/width=1920,.../uploads/...`.
+  const path = url.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, "");
+  const transform = `format=auto,fit=cover,dpr=1,anim=false,background=white,quality=75,width=${THUMBNAIL_SIZE_PX},height=${THUMBNAIL_SIZE_PX}`;
+
+  return `https://${LUMA_IMAGE_HOST}/cdn-cgi/image/${transform}${path}`;
+}
+
+function readCoverImageUrl(
+  jsonLd: Record<string, unknown>,
+  pageData: Record<string, unknown> | null,
+): string | null {
+  const cover =
+    readString(asRecord(pageData?.event), "cover_url") ??
+    [jsonLd.image].flat().find((image): image is string => typeof image === "string");
+
+  return cover ? lumaThumbnailUrl(cover) : null;
 }
 
 async function fetchHtml(url: string, signal?: AbortSignal) {
