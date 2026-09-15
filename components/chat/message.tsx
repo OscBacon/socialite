@@ -1,7 +1,14 @@
 "use client";
 
 import type { EveDynamicToolPart, EveMessage, EveMessagePart } from "eve/react";
-import { ChevronDownIcon, ChevronRightIcon, CheckIcon, Loader2Icon, XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CheckIcon,
+  ExternalLinkIcon,
+  Loader2Icon,
+  XIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Markdown } from "@/components/chat/markdown";
 import { Button } from "@/components/ui/button";
@@ -107,6 +114,14 @@ function AgentMessageParts({
 
   parts.forEach((part, index) => {
     if (part.type === "dynamic-tool") {
+      const shownEvents = readShownEvents(part);
+
+      if (shownEvents) {
+        flushTools(true);
+        elements.push(<EventCards events={shownEvents} key={`events:${part.toolCallId}`} />);
+        return;
+      }
+
       pendingTools.push(part);
       return;
     }
@@ -663,6 +678,85 @@ function InputRequestActions({
       ) : null}
     </div>
   );
+}
+
+type ShownEvent = {
+  readonly reason: string;
+  readonly startsAt: string | null;
+  readonly title: string;
+  readonly url: string;
+};
+
+const LUMA_EVENT_URL = /^https:\/\/(?:www\.)?(?:luma\.com|lu\.ma)\/[^/?#\s]+$/;
+const eventDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  month: "short",
+  timeZone: "Europe/London",
+  weekday: "short",
+});
+
+function EventCards({ events }: { readonly events: readonly ShownEvent[] }) {
+  return (
+    <ul className="my-3 grid gap-2">
+      {events.map((event) => (
+        <li
+          className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
+          key={event.url}
+        >
+          <div className="min-w-0 space-y-1">
+            <p className="font-medium leading-snug text-foreground">{event.title}</p>
+            {event.startsAt ? (
+              <p className="text-xs text-muted-foreground">{formatEventDate(event.startsAt)}</p>
+            ) : null}
+            <p className="text-sm text-muted-foreground">{event.reason}</p>
+          </div>
+          <Button asChild className="self-start sm:self-center" size="sm" variant="outline">
+            <a href={event.url} rel="noopener noreferrer" target="_blank">
+              Open event
+              <ExternalLinkIcon aria-hidden />
+            </a>
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function readShownEvents(part: EveDynamicToolPart): ShownEvent[] | null {
+  if (part.state !== "output-available" || normalizeToolName(resolveToolName(part)) !== "show events") {
+    return null;
+  }
+
+  const events = asRecord(part.output)?.events;
+
+  if (!Array.isArray(events)) {
+    return null;
+  }
+
+  const shown = events.flatMap((value): ShownEvent[] => {
+    const event = asRecord(value);
+    const { reason, startsAt, title, url } = event ?? {};
+
+    if (
+      typeof url !== "string" ||
+      !LUMA_EVENT_URL.test(url) ||
+      typeof title !== "string" ||
+      typeof reason !== "string"
+    ) {
+      return [];
+    }
+
+    return [{ reason, startsAt: typeof startsAt === "string" ? startsAt : null, title, url }];
+  });
+
+  return shown.length > 0 ? shown : null;
+}
+
+function formatEventDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : eventDateFormatter.format(date);
 }
 
 type ToolStatus = "completed" | "denied" | "error" | "running";
