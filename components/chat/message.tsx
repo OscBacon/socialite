@@ -14,6 +14,7 @@ import { Markdown } from "@/components/chat/markdown";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { formatEventDate, parseShownEvents, type ShownEvent } from "@/lib/events/shown-events";
 import { cn } from "@/lib/utils";
 
 const STREAM_TEXT_TICK_MS = 60;
@@ -680,25 +681,6 @@ function InputRequestActions({
   );
 }
 
-type ShownEvent = {
-  readonly imageUrl: string | null;
-  readonly reason: string;
-  readonly startsAt: string | null;
-  readonly title: string;
-  readonly url: string;
-};
-
-const LUMA_EVENT_URL = /^https:\/\/(?:www\.)?(?:luma\.com|lu\.ma)\/[^/?#\s]+$/;
-const LUMA_IMAGE_URL = /^https:\/\/images\.lumacdn\.com\//;
-const eventDateFormatter = new Intl.DateTimeFormat("en-GB", {
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  month: "short",
-  timeZone: "Europe/London",
-  weekday: "short",
-});
-
 function EventCards({ events }: { readonly events: readonly ShownEvent[] }) {
   return (
     <ul className="my-3 grid gap-2">
@@ -756,42 +738,7 @@ function readShownEvents(part: EveDynamicToolPart): ShownEvent[] | null {
     return null;
   }
 
-  const events = asRecord(part.output)?.events;
-
-  if (!Array.isArray(events)) {
-    return null;
-  }
-
-  const shown = events.flatMap((value): ShownEvent[] => {
-    const event = asRecord(value);
-    const { imageUrl, reason, startsAt, title, url } = event ?? {};
-
-    if (
-      typeof url !== "string" ||
-      !LUMA_EVENT_URL.test(url) ||
-      typeof title !== "string" ||
-      typeof reason !== "string"
-    ) {
-      return [];
-    }
-
-    return [
-      {
-        imageUrl: typeof imageUrl === "string" && LUMA_IMAGE_URL.test(imageUrl) ? imageUrl : null,
-        reason,
-        startsAt: typeof startsAt === "string" ? startsAt : null,
-        title,
-        url,
-      },
-    ];
-  });
-
-  return shown.length > 0 ? shown : null;
-}
-
-function formatEventDate(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : eventDateFormatter.format(date);
+  return parseShownEvents(part.output);
 }
 
 type ToolStatus = "completed" | "denied" | "error" | "running";
