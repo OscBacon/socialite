@@ -13,3 +13,7 @@ dist
 *.tsbuildinfo
 .env*.local
 plans/
+
+agent/skills/
+skills-lock.json
+
