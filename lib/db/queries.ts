@@ -9,6 +9,26 @@ import { db } from "@/lib/db/client";
 
 const CHAT_HISTORY_PAGE_SIZE = 20;
 
+// Postgres jsonb rejects lone UTF-16 surrogates (e.g. an emoji cut in half by
+// a string slice), so replace them with U+FFFD before writing.
+function toWellFormedJson<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.toWellFormed() as T;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(toWellFormedJson) as T;
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, toWellFormedJson(entry)]),
+    ) as T;
+  }
+
+  return value;
+}
+
 function encodeChatCursor(updatedAt: Date, id: string) {
   return `${updatedAt.toISOString()}::${id}`;
 }
@@ -258,7 +278,7 @@ export async function skipChatAuthorization({
     .values(
       events.map((event, offset) => ({
         chatId,
-        event,
+        event: toWellFormedJson(event),
         eventIndex: eventIndex + offset,
         id: randomUUID(),
       })),
@@ -336,16 +356,18 @@ export async function appendChatEvent({
     throw new Error("Chat not found.");
   }
 
+  const wellFormedEvent = toWellFormedJson(event);
+
   await db
     .insert(chatEvent)
     .values({
       chatId,
-      event,
+      event: wellFormedEvent,
       eventIndex,
       id: randomUUID(),
     })
     .onConflictDoUpdate({
-      set: { event },
+      set: { event: wellFormedEvent },
       target: [chatEvent.chatId, chatEvent.eventIndex],
     });
 }
@@ -377,7 +399,7 @@ export async function saveChatSnapshot({
       .values(
         events.map((event, eventIndex) => ({
           chatId,
-          event,
+          event: toWellFormedJson(event),
           eventIndex,
           id: randomUUID(),
         })),

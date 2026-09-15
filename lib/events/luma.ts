@@ -384,7 +384,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function truncate(text: string, maxLength: number) {
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1).trimEnd()}…` : text;
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  // Don't cut an emoji in half: a lone surrogate makes Postgres reject the
+  // JSON when the tool result is persisted.
+  let end = maxLength - 1;
+  const lastCode = text.charCodeAt(end - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+    end -= 1;
+  }
+
+  return `${text.slice(0, end).trimEnd()}…`;
 }
 
 async function mapWithConcurrency<T, R>(
