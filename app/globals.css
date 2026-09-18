@@ -30,6 +30,7 @@
   --font-mono:
     "Geist Mono", "Geist Mono Fallback", ui-monospace, "SFMono-Regular", "Menlo", "Monaco",
     "Consolas", monospace;
+  --font-wordmark: var(--font-instrument-serif), ui-serif, Georgia, serif;
 }
 
 :root,

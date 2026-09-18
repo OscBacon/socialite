@@ -1,7 +1,7 @@
 import { ArrowUpIcon, HammerIcon, MenuIcon, PanelLeftIcon, PlusIcon } from "lucide-react";
-import { TemplateFooterLinks } from "@/components/chat/template-footer-links";
 import { VercelIcon } from "@/components/icons";
 import { cn } from "@/lib/utils";
+import { Wordmark } from "@/app/_components/wordmark";
 
 const activeRowClass = "bg-muted/50 text-foreground";
 const inactiveRowClass = "text-muted-foreground";
@@ -66,11 +66,6 @@ export function AgentChatSkeleton({ mode }: { readonly mode: "chat" | "new" }) {
         </div>
 
         <AgentChatContentSkeleton mode={mode} />
-        {isNew ? (
-          <div className="shrink-0 pb-4 sm:pb-6">
-            <TemplateFooterLinks />
-          </div>
-        ) : null}
       </main>
     </div>
   );
@@ -86,12 +81,7 @@ function EmptyChatSkeleton() {
       <div className="flex min-h-0 flex-1 items-center justify-center pb-12 sm:pb-[8vh]">
         <div className="w-full max-w-2xl space-y-6 sm:space-y-8 md:space-y-9">
           <h1 className="flex justify-center">
-            <img
-              alt=""
-              className="size-16 select-none invert sm:size-20 md:size-24 dark:invert-0"
-              draggable={false}
-              src="/eve.svg"
-            />
+            <Wordmark />
           </h1>
           <div className="mx-auto w-full max-w-2xl px-4 sm:px-6">
             <StaticComposerFallback />
@@ -136,7 +126,7 @@ function StaticComposerFallback() {
       data-chat-composer
     >
       <div className="min-h-12 px-3 pt-3 pb-1 text-[15px] leading-6 text-muted-foreground/45 sm:px-4 dark:text-muted-foreground/60">
-        Ask anything...
+        Ask me about events...
       </div>
       <div className="flex min-h-9 items-center justify-between gap-2 px-3 pt-1 pb-2 sm:gap-3 sm:px-4">
         <div className="-ml-2 flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">

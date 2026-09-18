@@ -48,6 +48,7 @@ import {
 } from "@/lib/chat/persistence-client";
 import type { ActiveChat, SetupStatus, Viewer } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
+import { Wordmark } from "@/app/_components/wordmark";
 
 type AgentSnapshot = EveAgentStoreSnapshot<EveMessageData>;
 
@@ -1566,12 +1567,7 @@ export function EmptyChatBody({ composer }: { readonly composer?: ReactNode }) {
       <div className="flex min-h-0 flex-1 items-center justify-center">
         <div className="w-full max-w-2xl space-y-8 sm:space-y-10 md:space-y-12">
           <h1 className="flex justify-center">
-            <img
-              alt="eve"
-              className="size-16 select-none invert sm:size-20 md:size-24 dark:invert-0"
-              draggable={false}
-              src="/eve.svg"
-            />
+            <Wordmark />
           </h1>
           {composer}
         </div>

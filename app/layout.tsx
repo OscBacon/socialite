@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import type { ReactNode } from "react";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
@@ -13,7 +13,7 @@ const description = "The chat agent that curates events for you";
 const ogImage = {
   alt: title,
   height: 630,
-  url: "/eve-chat-template-og.png",
+  url: "/og.png",
   width: 1200,
 };
 
@@ -42,6 +42,13 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   subsets: ["latin"],
   variable: "--font-geist-mono",
+});
+
+const instrumentSerif = Instrument_Serif({
+  subsets: ["latin"],
+  style: "italic",
+  weight: "400",
+  variable: "--font-instrument-serif",
 });
 
 export const metadata: Metadata = {
@@ -94,7 +101,7 @@ export default function RootLayout({
 }) {
   return (
     <html
-      className={`${geistSans.variable} ${geistMono.variable}`}
+      className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
       lang="en"
       suppressHydrationWarning
     >
