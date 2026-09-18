@@ -1,15 +1,6 @@
 import { defaultTelegramAuth, telegramChannel } from "eve/channels/telegram";
 import { formatEventDate, parseShownEvents } from "@/lib/events/shown-events";
 
-// Comma-separated numeric Telegram user IDs. Fails closed: an empty or missing
-// list drops every message.
-const allowedUserIds = new Set(
-  (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean),
-);
-
 const BUTTON_TITLE_MAX_LENGTH = 40;
 
 // Credentials come from TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET_TOKEN.
@@ -19,15 +10,14 @@ export default telegramChannel({
   botUsername: process.env.TELEGRAM_BOT_USERNAME || undefined,
   uploadPolicy: "disabled",
   async onMessage(ctx, message) {
-    // Replaces eve's default dispatch gating: private chats from allowed,
-    // non-bot users with text only. Everything else is dropped silently.
+    // Replaces eve's default dispatch gating: private chats from non-bot
+    // users with text only. Everything else is dropped silently.
     const userId = message.from?.id;
 
     if (
       message.chat.type !== "private" ||
       !userId ||
       message.from?.isBot ||
-      !allowedUserIds.has(userId) ||
       !message.text.trim()
     ) {
       return null;
@@ -52,7 +42,7 @@ export default telegramChannel({
 
       const text = events
         .map((event) => {
-          const date = event.startsAt ? ` (${formatEventDate(event.startsAt)})` : "";
+          const date = event.startsAt ? ` (${formatEventDate(event.startsAt, event.timeZone)})` : "";
           return `• ${event.title}${date} — ${event.reason}`;
         })
         .join("\n");
