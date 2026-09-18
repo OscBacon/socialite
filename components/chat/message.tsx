@@ -364,6 +364,9 @@ function ReasoningPart({
   );
 }
 
+// Raw tool input/result JSON is only useful while developing.
+const SHOW_TOOL_PAYLOADS = process.env.NODE_ENV === "development";
+
 function ToolGroup({
   canRespond,
   isSettled,
@@ -513,8 +516,8 @@ function ToolDetails({
         onInputResponses={onInputResponses}
         part={part}
       />
-      <ToolPayload label="input" value={part.input} />
-      {hasOutput ? (
+      {SHOW_TOOL_PAYLOADS ? <ToolPayload label="input" value={part.input} /> : null}
+      {SHOW_TOOL_PAYLOADS && hasOutput ? (
         <ToolPayload
           label={part.state === "output-error" ? "error" : "result"}
           tone={part.state === "output-error" ? "destructive" : "default"}
@@ -752,6 +755,10 @@ function needsInputResponse(part: EveDynamicToolPart) {
 function hasToolDetails(part: EveDynamicToolPart) {
   if (isConnectionSearchTool(part)) {
     return false;
+  }
+
+  if (!SHOW_TOOL_PAYLOADS) {
+    return Boolean(part.toolMetadata?.eve?.inputRequest);
   }
 
   const hasInput = part.input !== undefined && formatPayload(part.input).trim().length > 0;
