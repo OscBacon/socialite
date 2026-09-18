@@ -694,7 +694,9 @@ function EventCards({ events }: { readonly events: readonly ShownEvent[] }) {
             <div className="min-w-0 space-y-1">
               <p className="font-medium leading-snug text-foreground">{event.title}</p>
               {event.startsAt ? (
-                <p className="text-xs text-muted-foreground">{formatEventDate(event.startsAt)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {formatEventDate(event.startsAt, event.timeZone)}
+                </p>
               ) : null}
               <p className="text-sm text-muted-foreground">{event.reason}</p>
             </div>

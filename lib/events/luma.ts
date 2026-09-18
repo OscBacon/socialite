@@ -12,15 +12,38 @@ const DESCRIPTION_MAX_CHARS = 500;
 const LUMA_IMAGE_HOST = "images.lumacdn.com";
 const THUMBNAIL_SIZE_PX = 320;
 
-export const LUMA_CITY = {
-  name: "London",
-  slug: "london",
-  // Links back to the city page itself are not events.
-  aliases: new Set(["london", "ldn"]),
-} as const;
+export const LUMA_CITIES = [
+  { name: "London", slug: "london" },
+  { name: "Paris", slug: "paris" },
+  { name: "New York", slug: "nyc" },
+] as const;
 
-// Single-segment Luma paths that are product pages rather than events.
+export type LumaCity = (typeof LUMA_CITIES)[number];
+
+export const SUPPORTED_CITY_NAMES = LUMA_CITIES.map((city) => city.name).join(", ");
+
+// Matches a city by name or Luma slug, ignoring case, spaces, and punctuation,
+// so "New York", "new-york", and "NYC" all resolve to luma.com/nyc.
+export function resolveLumaCity(input: string): LumaCity {
+  const key = normalizeCityKey(input);
+  const city = LUMA_CITIES.find(
+    (city) => normalizeCityKey(city.name) === key || city.slug === key,
+  );
+
+  if (!city) {
+    throw new Error(`City "${input}" is not supported. Supported cities: ${SUPPORTED_CITY_NAMES}.`);
+  }
+
+  return city;
+}
+
+function normalizeCityKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Single-segment Luma paths that are product or city pages rather than events.
 const NON_EVENT_SLUGS = new Set([
+  ...LUMA_CITIES.map((city) => city.slug),
   "app",
   "create",
   "discover",
@@ -38,6 +61,8 @@ export type LumaEvent = {
   readonly title: string;
   readonly startsAt: string;
   readonly endsAt: string | null;
+  // IANA time zone the event takes place in, e.g. "America/New_York".
+  readonly timeZone: string;
   readonly venue: string | null;
   readonly categories: readonly string[];
   readonly hosts: readonly string[];
@@ -56,8 +81,11 @@ export type LumaEventSearch = {
   readonly skippedUrls: readonly string[];
 };
 
-export async function findLumaEvents(signal?: AbortSignal): Promise<LumaEventSearch> {
-  const sourceUrl = `${LUMA_ORIGIN}/${LUMA_CITY.slug}`;
+export async function findLumaEvents(
+  city: LumaCity,
+  signal?: AbortSignal,
+): Promise<LumaEventSearch> {
+  const sourceUrl = `${LUMA_ORIGIN}/${city.slug}`;
   const page = await fetchHtml(sourceUrl, signal);
   const links = extractEventLinks(page.html, page.finalUrl);
 
@@ -85,7 +113,7 @@ export async function findLumaEvents(signal?: AbortSignal): Promise<LumaEventSea
   }
 
   return {
-    city: LUMA_CITY.name,
+    city: city.name,
     sourceUrl,
     linkCount: links.length,
     events: [...events.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt)),
@@ -122,9 +150,7 @@ export function extractEventLinks(html: string, pageUrl: string): string[] {
       continue;
     }
 
-    const normalizedSlug = slug.toLowerCase();
-
-    if (LUMA_CITY.aliases.has(normalizedSlug) || NON_EVENT_SLUGS.has(normalizedSlug)) {
+    if (NON_EVENT_SLUGS.has(slug.toLowerCase())) {
       continue;
     }
 
@@ -138,12 +164,13 @@ export function parseLumaEventPage(html: string, pageUrl: string): LumaEvent | n
   const jsonLd = findJsonLdEvent(html);
   const title = readString(jsonLd, "name");
   const startsAt = readString(jsonLd, "startDate");
+  const pageData = readNextPageData(html);
+  const timeZone = readString(asRecord(pageData?.event), "timezone");
 
-  if (!jsonLd || !title || !startsAt) {
+  if (!jsonLd || !title || !startsAt || !timeZone) {
     return null;
   }
 
-  const pageData = readNextPageData(html);
   const ticketInfo = asRecord(pageData?.ticket_info);
 
   return {
@@ -151,6 +178,7 @@ export function parseLumaEventPage(html: string, pageUrl: string): LumaEvent | n
     title,
     startsAt,
     endsAt: readString(jsonLd, "endDate"),
+    timeZone,
     venue: formatVenue(jsonLd.location),
     categories: readNames(pageData?.categories),
     hosts: pageData ? readNames(pageData.hosts) : readNames(jsonLd.organizer),

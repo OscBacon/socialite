@@ -20,6 +20,7 @@ export default defineTool({
             .regex(LUMA_EVENT_URL, "url must be a luma.com event URL returned by find_events"),
           title: z.string().trim().min(1),
           startsAt: z.string().optional().describe("The event's startsAt value from find_events."),
+          timeZone: z.string().optional().describe("The event's timeZone value from find_events."),
           reason: z
             .string()
             .trim()
@@ -55,6 +56,7 @@ export default defineTool({
           url: details?.url ?? event.url,
           title: details?.title ?? event.title,
           startsAt: details?.startsAt ?? event.startsAt ?? null,
+          timeZone: details?.timeZone ?? event.timeZone ?? null,
           reason: event.reason,
           imageUrl: details?.imageUrl ?? null,
         };

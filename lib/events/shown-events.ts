@@ -5,6 +5,7 @@ export type ShownEvent = {
   readonly imageUrl: string | null;
   readonly reason: string;
   readonly startsAt: string | null;
+  readonly timeZone: string | null;
   readonly title: string;
   readonly url: string;
 };
@@ -12,14 +13,8 @@ export type ShownEvent = {
 const LUMA_EVENT_URL = /^https:\/\/(?:www\.)?(?:luma\.com|lu\.ma)\/[^/?#\s]+$/;
 const LUMA_IMAGE_URL = /^https:\/\/images\.lumacdn\.com\//;
 
-const eventDateFormatter = new Intl.DateTimeFormat("en-GB", {
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  month: "short",
-  timeZone: "Europe/London",
-  weekday: "short",
-});
+// Events shown before show_events returned a time zone were all in London.
+const DEFAULT_TIME_ZONE = "Europe/London";
 
 export function parseShownEvents(output: unknown): ShownEvent[] | null {
   const events = asRecord(output)?.events;
@@ -29,7 +24,7 @@ export function parseShownEvents(output: unknown): ShownEvent[] | null {
   }
 
   const shown = events.flatMap((value): ShownEvent[] => {
-    const { imageUrl, reason, startsAt, title, url } = asRecord(value) ?? {};
+    const { imageUrl, reason, startsAt, timeZone, title, url } = asRecord(value) ?? {};
 
     if (
       typeof url !== "string" ||
@@ -45,6 +40,7 @@ export function parseShownEvents(output: unknown): ShownEvent[] | null {
         imageUrl: typeof imageUrl === "string" && LUMA_IMAGE_URL.test(imageUrl) ? imageUrl : null,
         reason,
         startsAt: typeof startsAt === "string" ? startsAt : null,
+        timeZone: typeof timeZone === "string" ? timeZone : null,
         title,
         url,
       },
@@ -54,9 +50,28 @@ export function parseShownEvents(output: unknown): ShownEvent[] | null {
   return shown.length > 0 ? shown : null;
 }
 
-export function formatEventDate(value: string) {
+// Formats the date in the event's own time zone, e.g. "Mon 21 Sept, 6:30 am".
+export function formatEventDate(value: string, timeZone: string | null) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : eventDateFormatter.format(date);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const options = {
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+    weekday: "short",
+  } as const;
+
+  try {
+    return new Intl.DateTimeFormat("en-GB", { ...options, timeZone: timeZone ?? DEFAULT_TIME_ZONE }).format(date);
+  } catch {
+    // Unknown time zone name.
+    return new Intl.DateTimeFormat("en-GB", { ...options, timeZone: DEFAULT_TIME_ZONE }).format(date);
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
