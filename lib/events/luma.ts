@@ -1,21 +1,42 @@
-// Fetches upcoming events from a Luma city page with plain HTTP requests.
-// The city page lists event links; each event page embeds schema.org JSON-LD
-// (title, times, venue, description, offers) and Next.js page data
+// Lists a city's upcoming events from Luma's discover API, which returns them
+// sorted by start time in pages of up to 50, then looks up each event's
+// description and categories in Luma's event API.
+// Single event pages are still parsed from their HTML: each embeds schema.org
+// JSON-LD (title, times, venue, description, offers) and Next.js page data
 // (categories, hosts, ticket status), so no headless browser is needed.
 
 const LUMA_ORIGIN = "https://luma.com";
+const LUMA_API_ORIGIN = "https://api.luma.com";
 const LUMA_HOSTS = new Set(["luma.com", "www.luma.com", "lu.ma", "www.lu.ma"]);
 const USER_AGENT = "Mozilla/5.0 (compatible; Socialite/0.1)";
 const FETCH_TIMEOUT_MS = 15_000;
-const DETAIL_CONCURRENCY = 5;
+// The discover API caps a page at 50 events.
+const DISCOVER_PAGE_SIZE = 50;
+const DISCOVER_MAX_PAGES = 6;
+const DETAIL_CONCURRENCY = 8;
+// Bounds the detail lookups and the tool output for wide date ranges.
+const MAX_LISTED_EVENTS = 80;
+const DEFAULT_WINDOW_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const LISTED_DESCRIPTION_MAX_CHARS = 200;
 const DESCRIPTION_MAX_CHARS = 500;
 const LUMA_IMAGE_HOST = "images.lumacdn.com";
 const THUMBNAIL_SIZE_PX = 320;
 
 export const LUMA_CITIES = [
-  { name: "London", slug: "london" },
-  { name: "Paris", slug: "paris" },
-  { name: "New York", slug: "nyc" },
+  {
+    name: "London",
+    slug: "london",
+    placeId: "discplace-QCcNk3HXowOR97j",
+    timeZone: "Europe/London",
+  },
+  { name: "Paris", slug: "paris", placeId: "discplace-NdLrh1xJfeotJZC", timeZone: "Europe/Paris" },
+  {
+    name: "New York",
+    slug: "nyc",
+    placeId: "discplace-Izx1rQVSh8njYpP",
+    timeZone: "America/New_York",
+  },
 ] as const;
 
 export type LumaCity = (typeof LUMA_CITIES)[number];
@@ -41,21 +62,6 @@ function normalizeCityKey(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-// Single-segment Luma paths that are product or city pages rather than events.
-const NON_EVENT_SLUGS = new Set([
-  ...LUMA_CITIES.map((city) => city.slug),
-  "app",
-  "create",
-  "discover",
-  "explore",
-  "help",
-  "home",
-  "map",
-  "pricing",
-  "signin",
-  "signup",
-]);
-
 export type LumaEvent = {
   readonly url: string;
   readonly title: string;
@@ -73,91 +79,209 @@ export type LumaEvent = {
   readonly imageUrl: string | null;
 };
 
-export type LumaEventSearch = {
-  readonly city: string;
-  readonly sourceUrl: string;
-  readonly linkCount: number;
-  readonly events: readonly LumaEvent[];
-  readonly skippedUrls: readonly string[];
+// The lean shape `find_events` returns: enough to match an interest and to
+// pass on to `show_events`.
+export type LumaListedEvent = {
+  readonly url: string;
+  readonly title: string;
+  readonly startsAt: string;
+  // IANA time zone the event takes place in, e.g. "America/New_York".
+  readonly timeZone: string;
+  readonly availability: string;
+  readonly categories: readonly string[];
+  readonly description: string;
 };
 
+// Calendar days in the city's local time, both inclusive, as YYYY-MM-DD.
+export type LumaDateRange = {
+  readonly from: string;
+  readonly to: string;
+};
+
+export type LumaEventSearch = {
+  readonly city: string;
+  readonly dateRange: string;
+  readonly events: readonly LumaListedEvent[];
+  readonly note?: string;
+};
+
+type DiscoverListing = Omit<LumaListedEvent, "categories" | "description"> & {
+  readonly apiId: string;
+  readonly endsAt: string | null;
+};
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Fills in a missing end of the range: `from` defaults to today in the city
+// and `to` to a week after `from`.
+export function resolveDateRange(
+  city: LumaCity,
+  from: string | undefined,
+  to: string | undefined,
+): LumaDateRange {
+  for (const date of [from, to]) {
+    if (date !== undefined && (!ISO_DATE.test(date) || Number.isNaN(Date.parse(date)))) {
+      throw new Error(`"${date}" is not a valid date. Use YYYY-MM-DD.`);
+    }
+  }
+
+  const start = from ?? localDate(new Date().toISOString(), city.timeZone);
+  const end =
+    to ??
+    new Date(Date.parse(start) + (DEFAULT_WINDOW_DAYS - 1) * DAY_MS).toISOString().slice(0, 10);
+
+  if (end < start) {
+    throw new Error(`The date range ends (${end}) before it starts (${start}).`);
+  }
+
+  return { from: start, to: end };
+}
+
+// Without a date range, lists events starting within the next 7 days.
 export async function findLumaEvents(
   city: LumaCity,
+  range: LumaDateRange | null,
   signal?: AbortSignal,
 ): Promise<LumaEventSearch> {
-  const sourceUrl = `${LUMA_ORIGIN}/${city.slug}`;
-  const page = await fetchHtml(sourceUrl, signal);
-  const links = extractEventLinks(page.html, page.finalUrl);
+  const now = new Date().toISOString();
+  const windowEnd = new Date(Date.now() + DEFAULT_WINDOW_DAYS * DAY_MS).toISOString();
+  const isPastWindow = (event: DiscoverListing) =>
+    range ? localDate(event.startsAt, event.timeZone) > range.to : event.startsAt >= windowEnd;
+  const isInWindow = (event: DiscoverListing) =>
+    // The listing still includes events that ended earlier today.
+    (event.endsAt ?? event.startsAt) > now &&
+    !isPastWindow(event) &&
+    (!range || localDate(event.startsAt, event.timeZone) >= range.from);
 
-  const results = await mapWithConcurrency(links, DETAIL_CONCURRENCY, async (url) => {
-    try {
-      return { event: await fetchLumaEvent(url, signal), url };
-    } catch (error) {
+  const listings = new Map<string, DiscoverListing>();
+  let lastListed: DiscoverListing | null = null;
+  let listingExhausted = false;
+  let cursor: string | null = null;
+
+  for (let page = 0; page < DISCOVER_MAX_PAGES; page++) {
+    const url = new URL("/discover/get-paginated-events", LUMA_API_ORIGIN);
+    url.searchParams.set("discover_place_api_id", city.placeId);
+    url.searchParams.set("pagination_limit", String(DISCOVER_PAGE_SIZE));
+    if (cursor) {
+      url.searchParams.set("pagination_cursor", cursor);
+    }
+
+    const response = asRecord(await fetchJson(url.toString(), signal));
+    const entries = Array.isArray(response?.entries) ? response.entries : [];
+
+    for (const entry of entries) {
+      const event = parseDiscoverEntry(asRecord(entry));
+      if (!event) {
+        continue;
+      }
+      lastListed = event;
+      if (isInWindow(event) && !listings.has(event.url)) {
+        listings.set(event.url, event);
+      }
+    }
+
+    cursor = response?.has_more === true ? readString(response, "next_cursor") : null;
+    if (!cursor) {
+      listingExhausted = true;
+      break;
+    }
+    // Events come sorted by start time, so later pages are all past the window.
+    if (lastListed && isPastWindow(lastListed)) {
+      break;
+    }
+  }
+
+  const sorted = [...listings.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const kept = sorted.slice(0, MAX_LISTED_EVENTS);
+  const events = await mapWithConcurrency(kept, DETAIL_CONCURRENCY, async (listing) => {
+    const details = await fetchEventDetails(listing.apiId, signal).catch((error: unknown) => {
       if (signal?.aborted) {
         throw error;
       }
-      return { event: null, url };
-    }
+      return null;
+    });
+    const { apiId: _apiId, endsAt: _endsAt, ...event } = listing;
+    return { ...event, categories: details?.categories ?? [], description: details?.description ?? "" };
   });
 
-  const events = new Map<string, LumaEvent>();
-  const skippedUrls: string[] = [];
-
-  for (const { event, url } of results) {
-    if (!event) {
-      skippedUrls.push(url);
-    } else if (!events.has(event.url)) {
-      // Redirecting slugs resolve to the same canonical event URL.
-      events.set(event.url, event);
-    }
+  let note: string | undefined;
+  if (sorted.length > kept.length) {
+    note = `Only the first ${kept.length} of ${sorted.length} events are listed. Use a narrower date range to see the rest.`;
+  } else if (listingExhausted && lastListed && !isPastWindow(lastListed)) {
+    note = `Luma only lists events up to ${localDate(lastListed.startsAt, lastListed.timeZone)} so far.`;
   }
 
   return {
     city: city.name,
-    sourceUrl,
-    linkCount: links.length,
-    events: [...events.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt)),
-    skippedUrls,
+    dateRange: range ? `${range.from} to ${range.to}` : `next ${DEFAULT_WINDOW_DAYS} days`,
+    events,
+    ...(note ? { note } : {}),
   };
 }
 
-export function extractEventLinks(html: string, pageUrl: string): string[] {
-  const links = new Set<string>();
+function parseDiscoverEntry(entry: Record<string, unknown> | null): DiscoverListing | null {
+  const event = asRecord(entry?.event);
+  const apiId = readString(event, "api_id");
+  const slug = readString(event, "url");
+  const title = readString(event, "name");
+  const startsAt = readString(event, "start_at");
+  const timeZone = readString(event, "timezone");
 
-  for (const match of html.matchAll(/<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["']/gi)) {
-    const href = match[1]!.replace(/&amp;/g, "&");
-
-    if (/signin/i.test(href)) {
-      continue;
-    }
-
-    let url: URL;
-    try {
-      url = new URL(href, pageUrl);
-    } catch {
-      continue;
-    }
-
-    // `?k=c` marks calendar (organizer) links rather than events.
-    if (!LUMA_HOSTS.has(url.hostname) || url.searchParams.get("k") === "c") {
-      continue;
-    }
-
-    const segments = url.pathname.split("/").filter(Boolean);
-    const slug = segments[0];
-
-    if (segments.length !== 1 || !slug) {
-      continue;
-    }
-
-    if (NON_EVENT_SLUGS.has(slug.toLowerCase())) {
-      continue;
-    }
-
-    links.add(`${LUMA_ORIGIN}/${slug}`);
+  if (!entry || !apiId || !slug || !title || !startsAt || !timeZone) {
+    return null;
   }
 
-  return [...links];
+  return {
+    apiId,
+    url: `${LUMA_ORIGIN}/${slug}`,
+    title,
+    startsAt,
+    endsAt: readString(event, "end_at"),
+    timeZone,
+    availability: formatDiscoverAvailability(entry, asRecord(entry.ticket_info)),
+  };
+}
+
+async function fetchEventDetails(apiId: string, signal?: AbortSignal) {
+  const url = new URL("/event/get", LUMA_API_ORIGIN);
+  url.searchParams.set("event_api_id", apiId);
+  const details = asRecord(await fetchJson(url.toString(), signal));
+
+  return {
+    categories: readNames(details?.categories),
+    description: truncate(
+      proseMirrorText(details?.description_mirror).replace(/\s+/g, " ").trim(),
+      LISTED_DESCRIPTION_MAX_CHARS,
+    ),
+  };
+}
+
+// Flattens Luma's rich-text description (a ProseMirror document) to plain
+// text, with a space between blocks so paragraphs don't run together.
+function proseMirrorText(node: unknown): string {
+  const record = asRecord(node);
+  if (!record) {
+    return "";
+  }
+
+  const children = Array.isArray(record.content) ? record.content : [];
+  const text = (typeof record.text === "string" ? record.text : "") + children.map(proseMirrorText).join("");
+
+  return record.type === "text" ? text : `${text} `;
+}
+
+// The calendar date an instant falls on in a time zone, as YYYY-MM-DD.
+export function localDate(instant: string, timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      day: "2-digit",
+      month: "2-digit",
+      timeZone,
+      year: "numeric",
+    }).format(new Date(instant));
+  } catch {
+    return instant.slice(0, 10);
+  }
 }
 
 export function parseLumaEventPage(html: string, pageUrl: string): LumaEvent | null {
@@ -245,6 +369,20 @@ async function fetchHtml(url: string, signal?: AbortSignal) {
   return { finalUrl: response.url || url, html: await response.text() };
 }
 
+async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
+  const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const response = await fetch(url, {
+    headers: { accept: "application/json", "user-agent": USER_AGENT },
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Luma returned HTTP ${response.status} for ${url}`);
+  }
+
+  return response.json();
+}
+
 function findJsonLdEvent(html: string): Record<string, unknown> | null {
   const scripts = html.matchAll(
     /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
@@ -327,6 +465,23 @@ function formatVenue(location: unknown): string | null {
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
+function formatDiscoverAvailability(
+  entry: Record<string, unknown>,
+  ticketInfo: Record<string, unknown> | null,
+): string {
+  const registration = readString(entry, "registration_availability");
+
+  if (registration === "waitlist" || (ticketInfo?.is_sold_out === true && entry.waitlist_active === true)) {
+    return "Sold out (waitlist open)";
+  }
+
+  if (registration === "sold-out" || ticketInfo?.is_sold_out === true) {
+    return "Sold out";
+  }
+
+  return formatAvailabilityNotes(ticketInfo);
+}
+
 function formatPrice(
   offers: unknown,
   ticketInfo: Record<string, unknown> | null,
@@ -380,6 +535,10 @@ function formatAvailability(
     return pageData?.waitlist_active === true ? "Sold out (waitlist open)" : "Sold out";
   }
 
+  return formatAvailabilityNotes(ticketInfo);
+}
+
+function formatAvailabilityNotes(ticketInfo: Record<string, unknown> | null): string {
   const notes: string[] = [];
 
   if (ticketInfo?.require_approval === true) {
