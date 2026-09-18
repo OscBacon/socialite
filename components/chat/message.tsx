@@ -13,7 +13,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Markdown } from "@/components/chat/markdown";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
 import { formatEventDate, parseShownEvents, type ShownEvent } from "@/lib/events/shown-events";
 import { cn } from "@/lib/utils";
 
@@ -103,10 +102,8 @@ function AgentMessageParts({
 
     elements.push(
       <ToolGroup
-        canRespond={canRespond}
         isSettled={isSettled}
         key={`tools:${partsForGroup.map((part) => part.toolCallId).join(":")}`}
-        onInputResponses={onInputResponses}
         parts={partsForGroup}
       />,
     );
@@ -123,6 +120,19 @@ function AgentMessageParts({
         return;
       }
 
+      if (part.toolMetadata?.eve?.inputRequest) {
+        flushTools(true);
+        elements.push(
+          <InputRequestActions
+            canRespond={canRespond}
+            key={`question:${part.toolCallId}`}
+            onInputResponses={onInputResponses}
+            part={part}
+          />,
+        );
+        return;
+      }
+
       pendingTools.push(part);
       return;
     }
@@ -132,10 +142,10 @@ function AgentMessageParts({
 
     elements.push(
       <AgentMessagePart
-        canRespond={canRespond}
+        isLastPart={index === parts.length - 1}
         isUser={isUser}
         key={key}
-        onInputResponses={onInputResponses}
+        isMessageStreaming={showCaret}
         part={part}
         showCaret={showCaret && index === lastTextIndex}
         streamKey={`${messageId}:${key}`}
@@ -149,16 +159,16 @@ function AgentMessageParts({
 }
 
 function AgentMessagePart({
-  canRespond,
+  isLastPart,
+  isMessageStreaming,
   isUser,
-  onInputResponses,
   part,
   showCaret,
   streamKey,
 }: {
-  readonly canRespond: boolean;
+  readonly isLastPart: boolean;
+  readonly isMessageStreaming: boolean;
   readonly isUser: boolean;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
   readonly part: EveMessagePart;
   readonly showCaret: boolean;
   readonly streamKey: string;
@@ -173,7 +183,18 @@ function AgentMessagePart({
         <AssistantTextPart showCaret={showCaret} streamKey={streamKey} text={part.text} />
       );
     case "reasoning":
-      return <ReasoningPart isStreaming={part.state === "streaming"} text={part.text} />;
+      // Some models report a thinking step without its text; there is nothing to expand.
+      if (part.text.trim().length === 0) {
+        return null;
+      }
+
+      return (
+        <ReasoningPart
+          // A reasoning part can be left in "streaming" state after the model moves on.
+          isStreaming={part.state === "streaming" && isMessageStreaming && isLastPart}
+          text={part.text}
+        />
+      );
     case "dynamic-tool":
       return null;
   }
@@ -368,27 +389,16 @@ function ReasoningPart({
 const SHOW_TOOL_PAYLOADS = process.env.NODE_ENV === "development";
 
 function ToolGroup({
-  canRespond,
   isSettled,
-  onInputResponses,
   parts,
 }: {
-  readonly canRespond: boolean;
   readonly isSettled: boolean;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
   readonly parts: readonly EveDynamicToolPart[];
 }) {
-  const shouldOpen = parts.some(needsInputResponse);
-  const [open, setOpen] = useState(shouldOpen);
-  const status = getSettledToolStatus(getToolGroupStatus(parts), isSettled && !shouldOpen);
+  const [open, setOpen] = useState(false);
+  const status = getSettledToolStatus(getToolGroupStatus(parts), isSettled);
   const label = summarizeToolGroup(parts, status);
   const canExpand = parts.length > 1 ? parts.some(hasToolDetails) : hasToolDetails(parts[0]!);
-
-  useEffect(() => {
-    if (shouldOpen) {
-      setOpen(true);
-    }
-  }, [shouldOpen]);
 
   return (
     <Collapsible
@@ -418,20 +428,10 @@ function ToolGroup({
       {canExpand ? (
         <CollapsibleContent className="ml-2 border-l border-border/40 pl-3 pt-0.5 pb-1">
           {parts.length === 1 ? (
-            <ToolDetails
-              canRespond={canRespond}
-              onInputResponses={onInputResponses}
-              part={parts[0]!}
-            />
+            <ToolDetails part={parts[0]!} />
           ) : (
             parts.map((part) => (
-              <ToolCallItem
-                canRespond={canRespond}
-                isSettled={isSettled}
-                key={part.toolCallId}
-                onInputResponses={onInputResponses}
-                part={part}
-              />
+              <ToolCallItem isSettled={isSettled} key={part.toolCallId} part={part} />
             ))
           )}
         </CollapsibleContent>
@@ -441,26 +441,15 @@ function ToolGroup({
 }
 
 function ToolCallItem({
-  canRespond,
   isSettled,
-  onInputResponses,
   part,
 }: {
-  readonly canRespond: boolean;
   readonly isSettled: boolean;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
   readonly part: EveDynamicToolPart;
 }) {
-  const shouldOpen = needsInputResponse(part);
-  const [open, setOpen] = useState(shouldOpen);
-  const status = getSettledToolStatus(getToolStatus(part), isSettled && !shouldOpen);
+  const [open, setOpen] = useState(false);
+  const status = getSettledToolStatus(getToolStatus(part), isSettled);
   const canExpand = hasToolDetails(part);
-
-  useEffect(() => {
-    if (shouldOpen) {
-      setOpen(true);
-    }
-  }, [shouldOpen]);
 
   const button = (
     <button
@@ -492,30 +481,17 @@ function ToolCallItem({
     <Collapsible className="py-0.5" onOpenChange={setOpen} open={open}>
       <CollapsibleTrigger asChild>{button}</CollapsibleTrigger>
       <CollapsibleContent className="mt-1 ml-5">
-        <ToolDetails canRespond={canRespond} onInputResponses={onInputResponses} part={part} />
+        <ToolDetails part={part} />
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-function ToolDetails({
-  canRespond,
-  onInputResponses,
-  part,
-}: {
-  readonly canRespond: boolean;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
-  readonly part: EveDynamicToolPart;
-}) {
+function ToolDetails({ part }: { readonly part: EveDynamicToolPart }) {
   const hasOutput = part.state === "output-available" || part.state === "output-error";
 
   return (
     <div className="space-y-1.5">
-      <InputRequestActions
-        canRespond={canRespond}
-        onInputResponses={onInputResponses}
-        part={part}
-      />
       {SHOW_TOOL_PAYLOADS ? <ToolPayload label="input" value={part.input} /> : null}
       {SHOW_TOOL_PAYLOADS && hasOutput ? (
         <ToolPayload
@@ -599,7 +575,6 @@ function InputRequestActions({
   readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
   readonly part: EveDynamicToolPart;
 }) {
-  const [freeformText, setFreeformText] = useState("");
   const inputRequest = part.toolMetadata?.eve?.inputRequest;
 
   if (!inputRequest) {
@@ -613,7 +588,7 @@ function InputRequestActions({
 
   if (inputResponse) {
     return (
-      <div className="rounded-md border border-border bg-background px-3 py-2 text-sm">
+      <div className="my-3 rounded-md border border-border bg-background px-3 py-2 text-sm">
         <span className="text-muted-foreground">Responded: </span>
         <span className="font-medium">
           {selectedOption?.label ?? inputResponse.text ?? inputResponse.optionId}
@@ -622,17 +597,8 @@ function InputRequestActions({
     );
   }
 
-  const sendTextResponse = () => {
-    const text = freeformText.trim();
-    if (!text) {
-      return;
-    }
-    void onInputResponses([{ requestId: inputRequest.requestId, text }]);
-    setFreeformText("");
-  };
-
   return (
-    <div className="space-y-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+    <div className="my-3 space-y-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
       <p className="text-sm text-muted-foreground">{inputRequest.prompt}</p>
       {inputRequest.options?.length ? (
         <div className="flex flex-wrap gap-2">
@@ -655,29 +621,6 @@ function InputRequestActions({
               {option.label}
             </Button>
           ))}
-        </div>
-      ) : null}
-      {inputRequest.allowFreeform || inputRequest.display === "text" ? (
-        <div className="flex gap-2">
-          <Input
-            disabled={!canRespond}
-            onChange={(event) => setFreeformText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                sendTextResponse();
-              }
-            }}
-            placeholder="Type a response"
-            value={freeformText}
-          />
-          <Button
-            disabled={!canRespond || freeformText.trim().length === 0}
-            onClick={sendTextResponse}
-            type="button"
-          >
-            Reply
-          </Button>
         </div>
       ) : null}
     </div>
@@ -748,17 +691,13 @@ function readShownEvents(part: EveDynamicToolPart): ShownEvent[] | null {
 
 type ToolStatus = "completed" | "denied" | "error" | "running";
 
-function needsInputResponse(part: EveDynamicToolPart) {
-  return Boolean(part.toolMetadata?.eve?.inputRequest && !part.toolMetadata.eve.inputResponse);
-}
-
 function hasToolDetails(part: EveDynamicToolPart) {
   if (isConnectionSearchTool(part)) {
     return false;
   }
 
   if (!SHOW_TOOL_PAYLOADS) {
-    return Boolean(part.toolMetadata?.eve?.inputRequest);
+    return false;
   }
 
   const hasInput = part.input !== undefined && formatPayload(part.input).trim().length > 0;
@@ -766,7 +705,7 @@ function hasToolDetails(part: EveDynamicToolPart) {
     part.state === "output-available" && formatPayload(part.output).trim().length > 0;
   const hasError = part.state === "output-error" && part.errorText.trim().length > 0;
 
-  return hasInput || hasOutput || hasError || Boolean(part.toolMetadata?.eve?.inputRequest);
+  return hasInput || hasOutput || hasError;
 }
 
 function isConnectionSearchTool(part: EveDynamicToolPart) {
